@@ -151,12 +151,22 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		w      float64
 		tier   int
 		cost1k float64
+		// urgency 过期紧迫度档位（见 expiryUrgency）。作为排序**第一键**：
+		// 只加权不前置的话，top5 截断仍可能把紧急号挤出去（尤其候选 >5 时），
+		// "优先用快过期积分"就落空。
+		urgency int
 	}
 	ws := make([]weighted, 0, len(cands))
 	for _, e := range cands {
 		ti, ci := costTier(e)
 		if ti == bestTier {
-			ws = append(ws, weighted{e: e, w: p.routingWeightOf(e, maxCredits, now), tier: ti, cost1k: ci})
+			ws = append(ws, weighted{
+				e:       e,
+				w:       p.routingWeightOf(e, maxCredits, now),
+				tier:    ti,
+				cost1k:  ci,
+				urgency: p.expiryUrgency(e, now),
+			})
 		}
 	}
 	if strategy := p.strategyForRealmLocked(realm); strategy != WeightedRandom {
@@ -193,6 +203,10 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		}
 	}
 	sort.SliceStable(ws, func(i, j int) bool {
+		// 紧迫度第一键（降序）：紧急号必然排在前面，不被 top5 截断挤出。
+		if ws[i].urgency != ws[j].urgency {
+			return ws[i].urgency > ws[j].urgency
+		}
 		// costTier 硬过滤后 ws 全员同层，但仍按 cost1k 升序排（tier 2 层内单价低者
 		// 在前；tier 0/1 层 cost1k 恒 0，本比较退化为权重比较）——读缓存字段不现算。
 		if ws[i].cost1k != ws[j].cost1k {
@@ -213,6 +227,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	if len(cands) > 5 {
 		cands = cands[:5]
 	}
+
 	var e *entry
 	// 防并发撞号：在持锁内基于「上次选中时刻」过滤，但同一批并发 goroutine 会串行进入
 	// 本函数（写锁），每个进入者都把 lastUsed 置为 now —— 于是同一瞬间的第 2..N 个
@@ -440,6 +455,12 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	return w
 }
 
+// expiryUrgencyWeight 紧迫度档位（1..3）对应的加性权重。取 25：单档即压过
+// credits 项上限（×10）与闲置补偿上限（idleWeightMax=5）之和，保证
+// 「一天内过期」的账号必然进入 top5 短名单——这是"优先用快过期积分"的
+// 硬保证；档内仍由原有权重决定相对次序。
+const expiryUrgencyWeight = 25.0
+
 // expiringNow 报告账号是否存在当前仍有效的快过期积分批次。
 func expiringNow(e *entry, now time.Time) bool {
 	return e.creditsExpiring > 0 &&
@@ -448,13 +469,53 @@ func expiringNow(e *entry, now time.Time) bool {
 		e.creditsEarliestExpiry.After(now)
 }
 
-// routingWeightOf 在普通账号权重上叠加快过期虚拟实例数量。prefer_expiring=false
-// 或账号无有效快过期批次时，实例数恒为 1，结果与旧 weightOf 完全一致。
+// expiryUrgency 账号积分过期的紧迫度分档：**值越大越紧急**，0 = 无过期批次。
+//
+// 分档而非连续排序，是为了给"最紧急的一档"硬优先的同时，保留档内原有的
+// 权重均衡（闲置补偿 / credits 比例）。若按剩余小时严格排序，最紧急号会
+// 100% 独占，把其他号的均衡信号全部废掉。
+//
+// 档位（按剩余小时数，口径与默认 expiring_soon=168h 窗口一致）：
+//
+//	0  无有效快过期批次（或 prefer_expiring 关闭）
+//	1  ≥72h        —— 一周内到期，温和优先
+//	2  ≥24h <72h   —— 三天内到期，明显优先
+//	3  <24h        —— 一天内到期，最强优先
+//
+// 紧迫度只在**候选集内部**竞争：进入本判定前，healthy（禁用/暂停/冷却/熔断/
+// 降权）、floorBlocked（触底）、inFlightFull（在途占满）已全部过滤完毕，
+// 故本函数不可能把这些账号选出来，也不影响它们的状态流转。
+func (p *Pool) expiryUrgency(e *entry, now time.Time) int {
+	if !p.preferExpiring || !expiringNow(e, now) {
+		return 0
+	}
+	h := e.creditsEarliestExpiry.Sub(now).Hours()
+	switch {
+	case h < 24:
+		return 3
+	case h < 72:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// routingWeightOf 在普通账号权重上叠加快过期加成。prefer_expiring=false 或账号
+// 无有效快过期批次时，结果与旧 weightOf 完全一致。
+//
+// 加成由两部分构成：
+//  1. 乘性 expiringVirtualSlots（保留既有 3:1 虚拟实例语义，老测试不回归）；
+//  2. 加性 urgencyWeight，随紧迫度档位线性增长，量级压过 credits 项（×10）与
+//     闲置补偿（≤5）——否则高余额号恒压过快过期号，"优先用快过期积分"落空。
 func (p *Pool) routingWeightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	w := p.weightOf(e, maxCredits, now)
-	if p.preferExpiring && expiringNow(e, now) {
-		return w * expiringVirtualSlots
+	if !p.preferExpiring {
+		return w
 	}
+	if expiringNow(e, now) {
+		w *= expiringVirtualSlots
+	}
+	w += float64(p.expiryUrgency(e, now)) * expiryUrgencyWeight
 	return w
 }
 

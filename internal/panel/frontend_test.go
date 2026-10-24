@@ -1380,7 +1380,9 @@ func TestPanelRemarkAndFoldWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`id="btnRemarks"`, `id="remarkVeil"`, `id="remarkBody"`, `id="btnRemarkSave"`, `id="btnRemarkClear"`, `id="expPad"`, `id="btnExpFold"`} {
+	for _, want := range []string{`id="btnRemarks"`, `id="remarkVeil"`, `id="remarkBody"`, `id="btnRemarkSave"`, `id="btnRemarkClear"`, `id="expPad"`, `id="btnExpFold"`,
+		// 账号池分区标签 + 账号详情弹层（账号池按域分组 + 服务端持久化备注）。
+		`id="accRealmTabs"`, `data-realm="cn"`, `data-realm="global"`, `id="detVeil"`, `id="detGrid"`, `id="detNote"`, `id="btnDetSaveNote"`} {
 		if !bytes.Contains(html, []byte(want)) {
 			t.Fatalf("index.html 缺少 %s", want)
 		}
@@ -1401,6 +1403,11 @@ func TestPanelRemarkAndFoldWiring(t *testing.T) {
 		"function remarkKey(",
 		"function remarkName(",
 		"function applyExpFold(",
+		// 分区 + 详情 + 服务端备注
+		"LS_ACC_REALM = 'wb2api.accrealm.v1'",
+		"function openDetail(",
+		"function saveDetailNote(",
+		"/note",
 	} {
 		if !bytes.Contains(js, []byte(want)) {
 			t.Fatalf("app.js 缺少 %s", want)

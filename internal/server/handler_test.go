@@ -504,7 +504,9 @@ func TestApplyErrorPolicyChannelRefusedDoesNotDisable(t *testing.T) {
 		wantCooling  bool
 	}{
 		{"11128 channel refused", `{"code":"11-128","msg":"request illegal","displayTips":{"en":"This call failed channel verification, possibly because it was not sent from an official client."}}`, upstream.ErrChannelRefused, false, false},
-		{"11140 account restricted", `{"code":11140,"msg":"request illegal"}`, upstream.ErrAccountFault, true, false},
+		// 11140 不再一次定死：未连续 restrictedThreshold 次时只给长冷却（到期自动回池），
+		// 连续达阈值才 Disable。单次命中故 wantDisabled=false、wantCooling=true。
+		{"11140 account restricted", `{"code":11140,"msg":"request illegal"}`, upstream.ErrAccountFault, false, true},
 		{"11140 rate-limiting variant", `{"code":11140,"msg":"The model provider is rate-limiting requests."}`, upstream.ErrSoftRate, false, true},
 	}
 	for _, tc := range cases {
@@ -2052,5 +2054,54 @@ func TestModelsHiddenFiltered(t *testing.T) {
 	}
 	if ids["cn:deepseek-v3"] {
 		t.Errorf("hidden model leaked into /v1/models: ids=%v", ids)
+	}
+}
+
+// TestApplyErrorPolicy11140EscalatesAfterThreshold 锁定 11140 的渐进语义：
+// 前 restrictedThreshold-1 次只长冷却（不禁用、自动回池），第 restrictedThreshold
+// 次才升级 Disable。防止回归到「一次命中即永久禁用」的旧行为。
+func TestApplyErrorPolicy11140EscalatesAfterThreshold(t *testing.T) {
+	body := `{"code":11140,"msg":"request illegal"}`
+	if got := upstream.Classify(400, body); got != upstream.ErrAccountFault {
+		t.Fatalf("Classify=%v want ErrAccountFault", got)
+	}
+	p := pool.New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	h := NewHandler(Config{Pool: p})
+
+	for i := 1; i < pool.RestrictedThresholdForTest(); i++ {
+		h.applyErrorPolicy("u1", upstream.ErrAccountFault, body, "glm-5.2", nil)
+		st, _ := p.Status("u1")
+		if st.Disabled {
+			t.Fatalf("第 %d 次命中不应禁用: %+v", i, st)
+		}
+		if !st.Cooling {
+			t.Fatalf("第 %d 次命中应进入长冷却: %+v", i, st)
+		}
+	}
+
+	h.applyErrorPolicy("u1", upstream.ErrAccountFault, body, "glm-5.2", nil)
+	st, _ := p.Status("u1")
+	if !st.Disabled {
+		t.Fatalf("第 %d 次命中应升级禁用: %+v", pool.RestrictedThresholdForTest(), st)
+	}
+}
+
+// TestNoteRestrictedClearedBySuccess 锁定清零点：chat 成功后连续 11140 计数归零，
+// 下次命中重新从长冷却开始，不会因历史累计被提前禁用。
+func TestNoteRestrictedClearedBySuccess(t *testing.T) {
+	p := pool.New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	for i := 0; i < pool.RestrictedThresholdForTest()-1; i++ {
+		p.NoteRestricted("u1")
+	}
+	p.NoteSuccess("u1")
+	p.NoteRestricted("u1")
+	st, _ := p.Status("u1")
+	if st.Disabled {
+		t.Fatalf("成功后计数应清零，不应禁用: %+v", st)
+	}
+	if !st.Cooling {
+		t.Fatalf("应重新进入长冷却: %+v", st)
 	}
 }

@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -1683,6 +1684,42 @@ func TestStatusExposesRuntimeFields(t *testing.T) {
 	p.Release("u1")
 }
 
+// TestSetNotePersistRoundTrip 备注（面板「详情」编辑）必须落盘并随 Status 透出：
+// 跨重启 / 跨设备不丢是这次把备注从浏览器 localStorage 升级到服务端的核心诉求。
+func TestSetNotePersistRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "state.json")
+	p := New(fp)
+	p.Add(&auth.Auth{UID: "u1"})
+	if !p.SetNote("u1", "主力号 · 别动") {
+		t.Fatal("SetNote 对已存在账号应返回 true")
+	}
+	if p.SetNote("ghost", "x") {
+		t.Fatal("SetNote 对不存在账号应返回 false")
+	}
+	st, _ := p.Status("u1")
+	if st.Note != "主力号 · 别动" {
+		t.Fatalf("Status.Note=%q 未透出", st.Note)
+	}
+	// 落盘后重建：note 必须随 state.json 恢复。
+	p.saveLocked()
+	p2 := New(fp)
+	p2.RestoreFromSnapshot()
+	st2, ok := p2.Status("u1")
+	if !ok || st2.Note != "主力号 · 别动" {
+		t.Fatalf("重启后 note 丢失: %+v ok=%v", st2, ok)
+	}
+	// 清空备注 → 落盘应省略字段（omitempty），恢复后为空。
+	if !p2.SetNote("u1", "") {
+		t.Fatal("清空备注应成功")
+	}
+	p2.saveLocked()
+	raw, _ := os.ReadFile(fp)
+	if bytes.Contains(raw, []byte(`"note"`)) {
+		t.Fatal("清空后 state.json 仍含 note 字段")
+	}
+}
+
 func TestRecordTokenUsage(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
@@ -1820,9 +1857,15 @@ func TestPreferExpiringDisabledRestoresWeight(t *testing.T) {
 	p.mu.Lock()
 	we := p.routingWeightOf(p.byUID["a"], 100, now)
 	wn := p.routingWeightOf(p.byUID["b"], 100, now)
+	urg := p.expiryUrgency(p.byUID["a"], now)
 	p.mu.Unlock()
-	if we != wn*expiringVirtualSlots {
-		t.Fatalf("enabled expiring weight=%v want %v", we, wn*expiringVirtualSlots)
+	// 开启 = 既有 3:1 虚拟实例 **加上**新的紧迫度加性项（earliest-expiry 优先）。
+	want := wn*expiringVirtualSlots + float64(urg)*expiryUrgencyWeight
+	if we != want {
+		t.Fatalf("enabled expiring weight=%v want %v (urgency=%d)", we, want, urg)
+	}
+	if urg == 0 {
+		t.Fatal("1h 内到期的账号紧迫度应为最高档 3")
 	}
 
 	p.SetPreferExpiring(false)

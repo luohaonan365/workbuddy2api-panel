@@ -264,6 +264,9 @@ function rateLimitMeta(row, now) {
     };
   }
   const title = [model, resetAt ? '上游重置：' + fmtLocalDateTime(resetAt) : '上游重置：时间未知'];
+  // detail 必须先声明：'use strict' 下未声明就赋值会抛 ReferenceError，整次
+  // renderAccounts 崩溃、账号池表格被清空（此前账号池空白就是这个 bug）。
+  let detail;
   if (until && resetAt && until < resetAt) {
     // 双时钟（issue #171 问题二）：黄框出现/消失由 until 决定（网关为防超长
     // 限流拖死全池，把重试封顶在 now+softRateMax），主文字却按 resetAt 显示，
@@ -379,10 +382,19 @@ setTimeout(() => {
 }, 0);
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
+/* 分区标签（全部/国内版/国际版）的当前选中域：'' = 全部。记在本机，刷新生效。 */
+const LS_ACC_REALM = 'wb2api.accrealm.v1';
+let accRealm = (() => { try { return localStorage.getItem(LS_ACC_REALM) || ''; } catch (e) { return ''; } })();
 function renderAccounts(list) {
   const tb = $('accBody');
+  // 分区过滤：''=全部，'cn'=国内版，'global'=国际版。状态统计卡仍是全池口径，
+  // 这里只过滤表格行，不影响顶部 KPI。
+  if (accRealm) list = list.filter(s => (s.realm || 'cn') === accRealm);
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
+    const emptyMsg = accRealm
+      ? '<div class="big">这一区暂无账号</div>切到「全部」查看所有账号，或点右上角「添加账号」'
+      : '<div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号';
+    tb.innerHTML = '<tr><td colspan="9"><div class="empty">' + emptyMsg + '</div></td></tr>';
     return;
   }
   // 有总额度（credits_total）→ 进度条按自身 剩余/总额 百分比；旧数据无总额 → 退回池内最高=100%
@@ -448,6 +460,7 @@ function renderAccounts(list) {
       '</span></td>' +
       '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
       '<td class="acts">' +
+        '<button class="xs ghost" data-a="detail" data-u="' + esc(s.uid) + '" title="查看账号详情（邮箱 / 域 / 余额 / 用量 / 备注）">详情</button>' +
         // 企业版无个人成长体系（签到 400「企业账号不支持该操作」/ 成长任务 403）：
         // 不渲染「签到」「任务」按钮，只留「额度」——点它走 /balance，企业额度由
         // upstream 的 get-enterprise-user-usage 口径填充。
@@ -538,6 +551,7 @@ $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
   if (!b) return;
   const u = b.dataset.u, a = b.dataset.a;
+  if (a === 'detail') { openDetail(u); return; }  // 详情弹层只读展示，不走下面的禁用/刷新流程
   if (a === 'remove' && !confirm('移除账号将删除池状态与 auths/ 下的凭证文件，且不可恢复。确认移除？')) return;
   if (a === 'disable' && !confirm('禁用后该账号不再参与选号（保号任务默认也跳过），需手动解冻才能恢复。若只是想临时让位、仍要保号，请改用「暂停选号」。确认禁用？')) return;
   b.disabled = true;
@@ -569,6 +583,76 @@ $('accBody').addEventListener('click', async ev => {
   } catch (e) { toast(e.message, 'err'); }
   finally { b.disabled = false; loadOverview(true); }
 });
+
+/* ── 账号池分区标签 + 账号详情弹层 ─────────────────────────────────── */
+/* 分区：点击 tab 切换 accRealm（''=全部 / cn=国内版 / global=国际版），只过滤表格行，
+   顶部 KPI 仍是全池口径。选中态记 localStorage，刷新后保持。 */
+function initAccRealmTabs() {
+  const wrap = $('accRealmTabs');
+  if (!wrap) return;
+  wrap.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('on', (t.dataset.realm || '') === accRealm);
+    t.onclick = () => {
+      accRealm = t.dataset.realm || '';
+      try { localStorage.setItem(LS_ACC_REALM, accRealm); } catch (e) {}
+      wrap.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+      if (overviewData) renderAccounts(overviewData.accounts || []);
+    };
+  });
+}
+
+/* 详情弹层：展示完整账号信息 + 服务端持久化备注编辑。
+   数据来自 overviewData 缓存（账号池每轮刷新都有），不额外发请求。 */
+let detUID = '';
+function findAccount(uid) {
+  return ((overviewData && overviewData.accounts) || []).find(s => s.uid === uid) || null;
+}
+function openDetail(uid) {
+  const s = findAccount(uid);
+  if (!s) { toast('账号已不在池中', 'err'); return; }
+  detUID = uid;
+  const tu = s.token_usage || {};
+  const rows = [
+    ['邮箱 / 昵称', s.nickname || '（未命名）'],
+    ['UID', s.uid],
+    ['域', (s.realm === 'global' ? '国际版' : '国内版') + (s.enterprise ? ' · 企业版' : '')],
+    ['状态', s.disabled ? '已禁用（' + (s.disabled_reason || '无原因') + '）'
+      : s.paused ? '已暂停选号'
+      : (s.cooling ? '冷却中（' + (s.reason || '') + '）' : '可用')],
+    ['积分', s.credits_total === -1 ? '不限（企业版）'
+      : (s.credits == null ? '—' : s.credits + (s.credits_total > 0 ? ' / ' + s.credits_total : ''))],
+    ['成功 / 失败', (s.success_count || 0) + ' / ' + (s.err_total || 0)],
+    ['Token 用量', (tu.request_count || 0) + ' 次 · ' + formatTokenCount(tu.total_tokens)],
+    ['最近模型', tu.last_model || '—'],
+    ['最近成功', s.last_success ? new Date(s.last_success).toLocaleString() : '—'],
+    ['最近错误', s.last_err ? new Date(s.last_err).toLocaleString() : '—'],
+  ];
+  $('detGrid').innerHTML = rows.map(r => '<dt>' + esc(r[0]) + '</dt><dd>' + esc(String(r[1])) + '</dd>').join('');
+  $('detHint').textContent = remarkOf(uid) ? '备注：' + remarkOf(uid) : '';
+  // 备注初值：服务端落盘（s.note）优先，回落本机 localStorage（迁移期兼容）。
+  $('detNote').value = s.note || remarkOf(uid) || '';
+  $('detVeil').classList.add('on');
+}
+function closeDetail() { $('detVeil').classList.remove('on'); detUID = ''; }
+async function saveDetailNote() {
+  if (!detUID) return;
+  const note = $('detNote').value.trim();
+  try {
+    await api('accounts/' + encodeURIComponent(detUID) + '/note', { method: 'POST', body: JSON.stringify({ note }) });
+    // 同步本机备注映射：服务端是权威，本机这份只做展示兜底（换浏览器后由服务端下发）。
+    const map = remarksAll();
+    const k = remarkKey(detUID);
+    if (note) map[k] = note; else delete map[k];
+    storeRemarks(map);
+    toast('备注已保存（服务端）', 'ok');
+    closeDetail();
+    loadOverview(true);
+  } catch (e) { toast(e.message, 'err'); }
+}
+initAccRealmTabs();
+if ($('btnDetClose')) $('btnDetClose').onclick = closeDetail;
+if ($('btnDetSaveNote')) $('btnDetSaveNote').onclick = saveDetailNote;
+if ($('detVeil')) $('detVeil').addEventListener('click', ev => { if (ev.target === $('detVeil')) closeDetail(); });
 
 $('btnCheckinAll').onclick = async () => {
   try { await api('checkin_all', { method: 'POST' }); toast('全部签到已开始，结果见日志', 'ok'); }
@@ -3348,10 +3432,13 @@ if ($('btnExp')) $('btnExp').onclick = () => loadExpiry(true);
 // 「刷新」始终实时查（显式 force，不依赖事件对象真值）
 if ($('btnPk')) $('btnPk').onclick = () => loadPackages(true);
 
-/* ══ 账号备注（只写本机 localStorage；账号池 / 用量两个视图共用同一份映射）══════
+/* ══ 账号备注（服务端持久化为主，本机 localStorage 兜底）══════════════════
+   权威来源是服务端 state.json 的 note 字段（POST accounts/{uid}/note 写入，随 overview
+   下发）——跨设备 / 换浏览器不丢。本机 localStorage（wb2api.remarks.v1）仍保留做兜底，
+   仅在服务端该账号没有 note 时展示；「详情」弹层保存时双写两端。
    键取 uid 前 8 位——与 renderUsageDim 账号维度的 key 和积分扣除表的 uid 前缀同源，
    三个表格因此都能直接 join。展示层只替换文本并挂 .rm-ghost 虚体，账号标识本身
-   仍由服务端下发，不写回后端；备注是纯展示层信息，不参与选号 / 计费 / 鉴权。 */
+   仍由服务端下发；备注不参与选号 / 计费 / 鉴权。 */
 function remarksAll() {
   if (remarksCache) return remarksCache;
   try { remarksCache = JSON.parse(localStorage.getItem(LS_REMARKS)) || {}; }
@@ -3360,6 +3447,10 @@ function remarksAll() {
 }
 function remarkKey(uid) { return String(uid == null ? '' : uid).slice(0, 8); }
 function remarkOf(uid) {
+  // 服务端 note 优先（跨设备权威）；本机 localStorage 只在服务端为空时兜底。
+  // overviewData 是面板全局缓存；在抽离测试等无 overviewData 的上下文里按 undefined 跳过。
+  const acc = (typeof overviewData !== 'undefined' && overviewData && overviewData.accounts || []).find(s => s.uid === uid);
+  if (acc && acc.note) return String(acc.note);
   const k = remarkKey(uid);
   return k ? String(remarksAll()[k] || '') : '';
 }
@@ -3406,10 +3497,26 @@ function saveRemarkForm() {
   });
   storeRemarks(map);
   closeRemarks();
-  // 备注只影响本机展示：重渲染当前视图即可，无需后端参与。
+  // 双写服务端：把 8 位前缀键映射回完整 uid，逐账号 POST note。服务端是权威（跨设备），
+  // 本机这份只做展示兜底。失败的账号不影响其余，逐条 toast 汇总。
+  const accounts = (overviewData && overviewData.accounts) || [];
+  const byKey = {};
+  accounts.forEach(s => { byKey[remarkKey(s.uid)] = s.uid; });
+  const jobs = [];
+  for (const k of Object.keys(map)) {
+    const full = byKey[k];
+    if (full) jobs.push(api('accounts/' + encodeURIComponent(full) + '/note', { method: 'POST', body: JSON.stringify({ note: map[k] }) }).catch(() => null));
+  }
+  // 已清除的键也要通知服务端清空（遍历当前有服务端 note 但本机已删的账号）。
+  accounts.forEach(s => {
+    if (s.note && !map[remarkKey(s.uid)]) jobs.push(api('accounts/' + encodeURIComponent(s.uid) + '/note', { method: 'POST', body: JSON.stringify({ note: '' }) }).catch(() => null));
+  });
+  Promise.all(jobs).then(rs => {
+    const failed = rs.filter(r => r === null).length;
+    toast(failed ? '备注已保存（' + failed + ' 个账号服务端写入失败）' : '备注已保存（服务端 + 本机）', failed ? 'err' : 'ok');
+  });
   if (view === 'accounts') loadOverview(true);
   else if (view === 'usage' && usageData) renderUsage(usageData);
-  toast('备注已保存（仅本机浏览器）');
 }
 if ($('btnRemarks')) $('btnRemarks').onclick = openRemarks;
 if ($('btnRemarkClose')) $('btnRemarkClose').onclick = closeRemarks;

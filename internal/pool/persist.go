@@ -150,6 +150,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			creditsEarliestRemaining: s.CreditsEarliestRemaining,
 			disabled:                 s.Disabled,
 			paused:                   s.Paused,
+			note:                     s.Note,
 			reason:                   s.Reason,
 			until:                    s.Until,
 			coolKind:                 s.CoolKind,
@@ -162,6 +163,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			softStreak:               s.SoftStreak,
 			sessionDeadFails:         s.SessionDeadFails,
 			consecutiveFails:         s.ConsecutiveFails,
+			restrictedFails:          s.RestrictedFails,
 		}
 		// 到期快照按当前时刻惰性清洗：已过期、零剩余或超出总余额的脏数据不恢复。
 		if e.creditsExpiring < 0 {
@@ -297,6 +299,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			CreditsTotal:             e.creditsTotal,
 			Disabled:                 e.disabled,
 			Paused:                   e.paused,
+			Note:                     e.note,
 			Reason:                   e.reason,
 			Until:                    e.until,
 			CoolKind:                 e.coolKind,
@@ -309,6 +312,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			SoftStreak:               e.softStreak,
 			SessionDeadFails:         e.sessionDeadFails,
 			ConsecutiveFails:         e.consecutiveFails,
+			RestrictedFails:          e.restrictedFails,
 			CreditsExpiring:          e.creditsExpiring,
 			CreditsEarliestExpiry:    e.creditsEarliestExpiry,
 			CreditsEarliestRemaining: e.creditsEarliestRemaining,

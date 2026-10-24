@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/credithist"
@@ -172,6 +173,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.withAuth(p.accountBalance))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.withAuth(p.accountRemove))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/note", p.withAuth(p.accountNote))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withAuth(p.accountTaskAccept))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withAuth(p.taskAcceptAll))
@@ -583,6 +585,29 @@ func (p *Panel) accountDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	p.cfg.Pool.Disable(uid, "manual disable (panel)")
 	log.Printf("panel: disable uid=%s（人工禁用）", uid)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// accountNote 写账号备注（面板「详情」里编辑）。body: {"note":"..."}，留空即清除。
+// 备注是服务端持久化的展示层信息，不参与选号/计费/鉴权；与浏览器 localStorage 备注
+// 的区别是跨设备/换浏览器不丢。超长截断（防止 state.json 被无意义撑大）。
+func (p *Panel) accountNote(w http.ResponseWriter, r *http.Request) {
+	uid := r.PathValue("uid")
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	note := strings.TrimSpace(body.Note)
+	if utf8.RuneCountInString(note) > 200 {
+		note = string([]rune(note)[:200])
+	}
+	if !p.cfg.Pool.SetNote(uid, note) {
+		writeErr(w, http.StatusNotFound, "account not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -1491,14 +1491,18 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
 	case upstream.ErrAccountFault:
 		// 账号级授权/配额故障按业务码分野（口径与 Classify 一致）：
-		//   - 11140 + "request illegal" → 账号被上游限制（异常行为/风控）：硬禁用。
-		//     解除只能由用户在 WorkBuddy 官方渠道申诉，重登无效（issue 1849 结论）。
+		//   - 11140 + "request illegal" → 账号被上游限制（异常行为/风控）。
+		//     该形态**不一次定死**：magpie issue #1849 实测其常见为「2 小时自动
+		//     解除」的临时限制，也有真被封的长期形态。故走 NoteRestricted：
+		//        · 未连续 3 次 → 长冷却 2h，到期自动回池，无需人工解冻；
+		//        · 连续 3 次（跨越约 6h 冷却窗）仍被限制 → 升级永久禁用。
+		//     彻底解除只能由用户在 WorkBuddy 官方渠道申诉，重登无效。
 		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
 		// 注意 11128 的 msg 同为 "request illegal"，但那是通道校验失败，已在
 		// Classify 分流到 ErrChannelRefused，走不到这里。
 		if upstream.IsAccountRestricted(body) {
-			h.cfg.Pool.Disable(uid, "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
+			h.cfg.Pool.NoteRestricted(uid)
 			return
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), "account fault (14017)")

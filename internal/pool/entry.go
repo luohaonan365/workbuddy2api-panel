@@ -102,6 +102,10 @@ type Status struct {
 	Enterprise      bool       `json:"enterprise,omitempty"`
 	Disabled        bool       `json:"disabled"`
 	DisabledReason  string     `json:"disabled_reason,omitempty"` // 仅 disabled 账号：禁用原因（运维可见）
+	// Note 运维给账号写的本服务端备注（面板「详情」里可编辑，落盘 state.json）。
+	// 纯展示层信息，不参与选号 / 计费 / 鉴权；与浏览器 localStorage 备注的区别是
+	// 跨设备 / 换浏览器不丢。
+	Note            string     `json:"note,omitempty"`
 	// Paused 暂停选号：退出选号候选（与 disabled 一样不参与选号），但**照常参与**
 	// 签到 / 活跃上报 / 保活 / 余额刷新四类保号任务。与 disabled 正交——disabled 是
 	// 「授权/session 终态，需人工 revive」，paused 是「运维临时让位」（多号轮换场景），
@@ -216,6 +220,8 @@ type entry struct {
 	coolKind       CoolKind
 	until          time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
 	disabled       bool
+	// note 运维备注（面板「详情」编辑），纯展示层，不参与选号/计费/鉴权。持久化。
+	note           string
 	// paused 暂停选号：与 disabled 正交。置位后退出选号候选（healthy 判否），
 	// 但保号任务遍历只按 Disabled 过滤，故 paused 号天然继续参与签到 / 活跃上报 /
 	// 保活 / 余额刷新。持久化（state.json），跨重启不丢。
@@ -258,6 +264,14 @@ type entry struct {
 	// 「上游持续故障 + 频繁重启」的组合重新学满 5 次；degradeUntil 持久化让降权期
 	// 重启不失忆（与 breakerUntil 同口径）。
 	consecutiveFails int
+	// restrictedFails 连续 11140（上游账号限制，IsAccountRestricted）计数。
+	// 与 sessionDeadFails 同构：11140 既有「2 小时自动解除」的临时形态（magpie
+	// issue #1849 实测），也有真被封的长期形态，一次命中就永久禁用会把前者的
+	// 健康账号冤杀。故按 restrictedThreshold 次连续命中才升级 Disable，未达
+	// 阈值只给长冷却（restrictedCooldown），到期自动回池、无需人工解冻。
+	// 持久化（stateAccount.RestrictedFails）：上游持续限制时重启归零会导致
+	// 重学；清零点（chat 成功、手工复活）同样落盘，重启后不残留旧计数。
+	restrictedFails int
 	// degradeUntil 连败降权截止：非零且未到期时该账号不参与 normal 选号（临时
 	// 出池）。与冷却/熔断**取更长者不叠加**（healthy 判定是并列或门，任一截止
 	// 未到期即不可选，生效的一定是最远者），到期自动回池，无需显式复位。
@@ -437,6 +451,8 @@ type stateAccount struct {
 	CreditsTotal int64     `json:"credits_total,omitempty"`
 	Disabled     bool      `json:"disabled"`
 	Paused       bool      `json:"paused,omitempty"`
+	// Note 账号备注（运维在面板编辑）。落盘以跨重启 / 跨设备保留。
+	Note         string    `json:"note,omitempty"`
 	Reason       string    `json:"reason,omitempty"`
 	Until        time.Time `json:"until,omitempty"`
 	CoolKind     CoolKind  `json:"cool_kind"`
@@ -459,6 +475,9 @@ type stateAccount struct {
 	SessionDeadFails int `json:"session_dead_fails"`
 	// ConsecutiveFails 连续失败计数（连败降权进度，见 entry.consecutiveFails）。
 	ConsecutiveFails int `json:"consecutive_fails"`
+	// RestrictedFails 连续 11140（上游账号限制）计数（见 entry.restrictedFails）。
+	// 持久化以保留「重启后连续计数继续累计」，避免上游持续限制时重启重学。
+	RestrictedFails int `json:"restricted_fails"`
 	// DegradeUntil 连败降权截止（issue #114）。仅未过期才持久化（落盘/恢复均惰性
 	// 过滤），避免降权期重启失忆；过期/零值不写。指针语义同 BreakerUntil。
 	DegradeUntil *time.Time `json:"degrade_until,omitempty"`
@@ -547,6 +566,19 @@ const defaultCostExploreInterval = 30 * time.Minute
 // 会误杀健康账号（P0-1：13 个 disabled 号全是误判）。3 次连续才判死：容忍偶发抖动，
 // 又不会让真正的死 session 留在池里反复被选中。
 const sessionDeadThreshold = 3
+
+// restrictedThreshold 连续 11140（上游账号限制）达到该次数才升级为永久禁用。
+// 11140 有「2 小时自动解除」的临时形态（magpie issue #1849 实测），一次命中
+// 即禁用会冤杀这类账号；连续 3 次（跨越约 6h 冷却窗）仍被限制才判为长期封禁。
+const restrictedThreshold = 3
+
+// RestrictedThresholdForTest 暴露 restrictedThreshold 供测试引用（避免测试里
+// 硬编码阈值，改动阈值时测试自动跟随）。
+func RestrictedThresholdForTest() int { return restrictedThreshold }
+
+// restrictedCooldown 11140 未达禁用阈值时的长冷却时长。取 2h 与上游临时限制
+// 的典型解除时长大致对齐：冷却自然到期即回池重试，无需人工解冻。
+const restrictedCooldown = 2 * time.Hour
 
 // sessionDeadReason 12153 判定为 session 死亡时的持久化 reason。
 const sessionDeadReason = "12153 session dead"

@@ -55,7 +55,45 @@ func (p *Pool) ClearSessionDead(uid string) {
 	}
 }
 
-// ReviveDisabled 人工/端点复活入口：清除 disabled + reason + 连续 12153 计数，
+// NoteRestricted 记录一次上游账号限制（11140 / IsAccountRestricted）。
+// 与 NoteSessionDead 同构：不一次定死——11140 有「2 小时自动解除」的临时形态
+// （magpie issue #1849 实测），也有真被封的长期形态。
+//   - 未达 restrictedThreshold：置长冷却 restrictedCooldown，到期自动回池，
+//     无需人工解冻。reason 写明需申诉。
+//   - 达到阈值：Disable（reason=11140 account restricted），并清计数。
+//
+// 返回 true 表示本次已达阈值并完成禁用。
+func (p *Pool) NoteRestricted(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.restrictedFails++
+	if e.restrictedFails < restrictedThreshold {
+		e.until = time.Now().Add(restrictedCooldown)
+		e.coolKind = CoolHard
+		e.reason = "account restricted by upstream (11140 request illegal); cooling 2h, appeal in WorkBuddy (submit feedback) to lift the restriction"
+		p.dirty.Store(true)
+		return false
+	}
+	e.restrictedFails = 0
+	p.disableLocked(e, "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
+	return true
+}
+
+// ClearRestricted 清连续 11140 计数——账号被证明未受限制的任何时刻调用：
+// chat 成功（NoteSuccess）、手工复活（ReviveDisabled）。
+func (p *Pool) ClearRestricted(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.restrictedFails = 0
+	}
+}
+
+// ReviveDisabled 人工/端点复活入口：清除 disabled + reason + 连续 12153/11140 计数，
 // 账号回到池子（若无其他冷却/熔断则立即可选，健康检查自然接管）。
 // **不改** Disabled 在选号/状态端点的既有语义：disabled 号依然不参与选号，
 // 直到被本方法复活。不存在的 uid 为空操作。
@@ -66,6 +104,7 @@ func (p *Pool) ReviveDisabled(uid string) {
 		e.disabled = false
 		e.reason = ""
 		e.sessionDeadFails = 0
+		e.restrictedFails = 0
 		p.dirty.Store(true)
 	}
 }
@@ -183,6 +222,7 @@ func (p *Pool) NoteSuccess(uid string) {
 		e.softStreak = 0
 		e.sessionDeadFails = 0
 		e.consecutiveFails = 0
+		e.restrictedFails = 0
 		e.degradeUntil = time.Time{}
 		p.dirty.Store(true)
 	}
@@ -363,6 +403,20 @@ func (p *Pool) Status(uid string) (Status, bool) {
 		return Status{}, false
 	}
 	return p.statusOf(uid, e), true
+}
+
+// SetNote 写账号备注（面板「详情」编辑）。纯展示层信息，不参与选号/计费/鉴权；
+// 落盘 state.json 跨重启/跨设备保留。返回 false = 账号不存在。
+func (p *Pool) SetNote(uid, note string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.note = note
+	p.saveLocked()
+	return true
 }
 
 // AuthByUID 返回账号的完整凭证（给调度器/运维接口用）。
@@ -606,6 +660,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		Cooling:                  now.Before(e.until) || now.Before(e.breakerUntil),
 		Disabled:                 e.disabled,
 		Paused:                   e.paused,
+		Note:                     e.note,
 		SuccessCount:             e.successCount,
 		ErrTotal:                 e.errTotal,
 		CheckinDone:              e.lastCheckinDay == now.Format("2006-01-02"),

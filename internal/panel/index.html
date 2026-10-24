@@ -603,6 +603,20 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     color: var(--ink-2); font-size: 12.5px; }
   .rm-row input { flex: 1; }
 
+  /* ── 账号池分区标签 + 账号详情弹层 ───────────────────────────────────
+     分区：账号池按域（国内版 cn / 国际版 global）切组，tab 复用 .dlg .tabs 视觉语言
+     但作用域改为 .box header 内嵌。详情：每行「详情」按钮弹层展示完整账号信息 +
+     服务端持久化备注编辑（POST accounts/{uid}/note）。 */
+  .box > header .tabs { display: inline-flex; gap: 2px; background: var(--surface-2); border-radius: 9px; padding: 3px; vertical-align: middle; }
+  .box > header .tabs .tab { padding: 4px 14px; border-radius: 7px; border: none; background: transparent; color: var(--ink-3); font: 550 12.5px var(--sans); cursor: pointer; }
+  .box > header .tabs .tab.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .det-grid { display: grid; grid-template-columns: 92px 1fr; gap: 7px 12px; font-size: 13px; }
+  .det-grid dt { color: var(--ink-3); white-space: nowrap; }
+  .det-grid dd { margin: 0; word-break: break-all; }
+  .det-grid dd .realm-tag { margin-left: 0; }
+  .det-note-row { display: flex; gap: 8px; margin-top: 14px; }
+  .det-note-row input { flex: 1; }
+
 </style>
 <!-- 移动端适配：独立文件，必须在主 <style> 之后（@media 覆盖依赖层叠顺序） -->
 <link rel="stylesheet" href="mobile.css">
@@ -705,6 +719,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <div class="box">
         <header>
           <h3>账号池</h3>
+          <span class="tabs" id="accRealmTabs" style="margin-left:12px">
+            <button class="tab on" data-realm="">全部</button>
+            <button class="tab" data-realm="cn">国内版</button>
+            <button class="tab" data-realm="global">国际版</button>
+          </span>
           <span class="grow"></span>
           <span class="note" id="accNote"></span>
           <button class="xs" id="btnRemarks">备注</button>
@@ -1359,7 +1378,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   <div class="dlg" style="width:560px">
     <header>
       <h3>账号备注</h3>
-      <div class="hint">备注只存在本机浏览器（localStorage: wb2api.remarks.v1），不写回后端；账号池与用量页会同时显示「备注 + 原昵称」。留空即清除该账号备注。</div>
+      <div class="hint">备注保存在服务端（state.json 的 note 字段），跨设备 / 换浏览器不丢；本机浏览器同时留一份兜底。账号池与用量页会同时显示「备注 + 原昵称」。留空即清除该账号备注。</div>
     </header>
     <div class="body">
       <div class="rm-list" id="remarkBody"></div>
@@ -1374,6 +1393,27 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 </div>
 
 <div id="toasts"></div>
+
+<!-- 账号详情：完整账号信息 + 服务端持久化备注编辑（POST accounts/{uid}/note） -->
+<div class="veil" id="detVeil">
+  <div class="dlg" style="width:600px">
+    <header>
+      <h3>账号详情</h3>
+      <div class="hint" id="detHint"></div>
+    </header>
+    <div class="body">
+      <dl class="det-grid" id="detGrid"></dl>
+      <div class="det-note-row">
+        <input type="text" id="detNote" placeholder="备注（服务端持久化，留空即清除）" maxlength="200">
+        <button class="primary" id="btnDetSaveNote">保存备注</button>
+      </div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnDetClose">关闭</button>
+    </footer>
+  </div>
+</div>
 
 <script src="app.js"></script>
 <script src="mobile.js"></script>
