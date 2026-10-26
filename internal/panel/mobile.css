@@ -314,4 +314,84 @@
   .who .nm, .who .id { min-width: 0; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
   /* 标签类（限流冷却 · 1时02分 / 模型档位）窄列里换行，而不是 nowrap 撑着容器溢出 */
   .tag { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+
+  /* ── 7. 视觉增强层的手机端回归 ──────────────────────────────────────
+     index.html 新增的增强层全部写在 mobile.css 之前，这里把不适合触屏/窄屏的
+     部分收回来：背景 fixed 在移动浏览器滚动时开销大；账号操作列的两行宽表布局
+     在卡片模式必须让位给"按钮平分一行"；弹层右上角 × 需要让出标题宽度。 */
+  body { background-attachment: scroll; }
+  /* 关掉 backdrop-filter 后必须换成不透明底：保留 86% 半透明会让滚动内容
+     直接透在标题栏上，比模糊更脏。 */
+  .topbar {
+    background: var(--surface);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  .nav a.on::before { display: none; }
+  .nav a:hover { transform: none; }
+  .nav .sig { margin: 8px 10px 12px; padding: 9px 10px; }
+  .brand { padding: 16px 14px 13px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px; }
+  .brand .logo svg { width: 17px; height: 17px; }
+
+  /* 账号卡的操作按钮由 mobile.css 统一平分一行，增强层给桌面列宽的上限要撤掉 */
+  #view-accounts .acc .c-acts { width: auto; }
+  #view-accounts .acc .acts { max-width: none; flex-wrap: nowrap; }
+  #view-accounts .acc .acts button { padding: 5px 2px; font-size: 11.5px; }
+  .acc td > .hint { max-width: none; }
+
+  /* 状态格在卡片里拆开：状态标签留在首行右侧，原因 / 模型限流信息落到整行宽。
+     否则长错误信息会被挤在右侧 1/4 的窄列里竖排，把整张卡撑高（实测 212px → 156px）。 */
+  #accBody tr > td:nth-child(3) { display: contents; }
+  #accBody tr > td:nth-child(3) > .tag {
+    grid-column: 9 / 13; justify-self: end; align-self: start;
+  }
+  #accBody tr > td:nth-child(3) > .hint {
+    grid-column: 1 / -1; text-align: left;
+  }
+  #accBody tr > td:nth-child(3) > .rate-limits {
+    grid-column: 1 / -1; min-width: 0;
+  }
+
+  /* 卡片化的表格外层不再需要桌面端的顶部渐变 */
+  .box:has(> .tbl-wrap) > header { background: none; }
+
+  /* 配置卡：单列 + 更紧凑的内边距；开关行保留横向留白 */
+  .cfg-sub { margin: 16px 0 8px; font-size: 10px; }
+  .cfg-sub:first-child { margin-top: 2px; }
+  .cfg-card { padding: 11px 12px 12px; border-radius: 11px; }
+  .cfg-card.cfg-wide { margin-top: 10px; }
+  .cfg-card > .switch, .switch {
+    padding: 9px 11px; margin-bottom: 8px; border-radius: 10px;
+  }
+  .cfg-card > .switch {
+    padding: 0 0 9px; margin: 0 0 9px; border-radius: 0;
+  }
+  .cfg-card > .fld { margin: 0; }
+  .cfg-card > .hint { margin-top: 8px; padding-top: 7px; }
+
+  /* 弹层：× 固定在右上角，header 留出等宽避让 */
+  .dlg header { padding-right: 46px; }
+  .dlg-x { top: 8px; right: 8px; width: 28px; height: 28px; font-size: 18px; }
+  .tst { padding: 9px 12px 10px; font-size: 12.5px; }
+  .tst::before { width: 17px; height: 17px; font-size: 10px; }
+  .url { line-height: 1.5; }
+  .stat .k { gap: 5px; margin-top: 2px; }
+  .stat:hover { background: none; }
+  .stat::after { display: none; }
+  .view:not([hidden]) { animation: none; }
+  #btnRefresh::before { width: 12px; height: 12px; }
+  .dlg-x:hover:not(:disabled) { background: transparent; border-color: transparent; }
+}
+
+/* 极窄屏（手机竖屏）：指标从三列改为两列。
+   三列时「积分剩余 / 总额」这种“A / B”长数字必然折行；两列后字号可以回到 17px，
+   最后一格「粘性会话」铺满整行，改成横向摘要，避免孤零零占一格。 */
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat .v { font-size: 17px; }
+  .stats .stat:last-child {
+    grid-column: 1 / -1;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .stats .stat:last-child .k { margin-top: 0; }
 }

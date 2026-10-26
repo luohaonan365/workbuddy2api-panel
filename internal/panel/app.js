@@ -33,6 +33,9 @@ function applyTheme() {
     ? '<circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M12.8 3.2l-1.4 1.4M4.6 11.4l-1.4 1.4"/>'
     : '<path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/>';
   $('btnTheme').title = eff === 'light' ? '切换到深色' : '切换到浅色';
+  // 手机浏览器地址栏配色跟随面板主题（<meta name="theme-color">）。
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (metaTheme) metaTheme.setAttribute('content', eff === 'light' ? '#f3f5fa' : '#0a0c12');
 }
 addEventListener('change', applyTheme);
 $('btnTheme').onclick = () => {
@@ -58,6 +61,9 @@ function toast(msg, cls) {
   const el = document.createElement('div');
   el.className = 'tst ' + (cls || '');
   el.textContent = msg;
+  el.setAttribute('role', cls === 'err' ? 'alert' : 'status');
+  el.title = '点击关闭';
+  el.onclick = () => el.remove();
   $('toasts').appendChild(el);
   setTimeout(() => el.remove(), 3600);
 }
@@ -412,7 +418,7 @@ function renderAccounts(list) {
         : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
       tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
     } else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
-    const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
+    const note = s.reason ? '<div class="hint" title="' + esc(s.reason) + '" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
     const rateLimits = rateLimitRowsHtml(s.rate_limited_models, Date.now());
     const short = s.uid.length > 16 ? s.uid.slice(0, 16) + '…' : s.uid;
     // 企业版不限量：上游 limitNum == -1，网关以 credits_total=-1 透出（见 upstream
@@ -3522,6 +3528,33 @@ if ($('btnRemarks')) $('btnRemarks').onclick = openRemarks;
 if ($('btnRemarkClose')) $('btnRemarkClose').onclick = closeRemarks;
 if ($('btnRemarkClear')) $('btnRemarkClear').onclick = () => { storeRemarks({}); renderRemarkBody(); };
 if ($('btnRemarkSave')) $('btnRemarkSave').onclick = saveRemarkForm;
+
+/* 弹层统一关闭：右上角 × 与点遮罩都复用 footer 原有按钮的 onclick，
+   不另写清理逻辑（添加账号弹层还带着轮询/计时器，漏停会留下后台请求）。
+   keyVeil 是鉴权锁定层，没有 ×，也不响应遮罩点击。 */
+document.querySelectorAll('.dlg-x').forEach(btn => {
+  btn.onclick = () => {
+    const id = btn.getAttribute('data-close-btn');
+    const target = id && $(id);
+    if (target) target.click();
+  };
+});
+document.querySelectorAll('.veil:not([data-lock]):not(#detVeil)').forEach(veil => {
+  veil.addEventListener('click', ev => {
+    if (ev.target !== veil) return;
+    const btn = veil.querySelector('.dlg-x');
+    if (btn) btn.click();
+    else veil.classList.remove('on');
+  });
+});
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape') return;
+  const open = document.querySelectorAll('.veil.on:not([data-lock])');
+  const top = open[open.length - 1];
+  if (!top) return;
+  const btn = top.querySelector('.dlg-x');
+  if (btn) btn.click();
+});
 
 /* ══ 首页「积分到期提醒」折叠（选择记在本机，默认展开）═════════════════════
    展开态是原行为：点「检查」就要能立刻看到结果，所以默认不折叠；用户收起一次后
