@@ -12,6 +12,8 @@ data/
 /credit
 /wb2api
 /signin_bin
+# 启动器与按需编译产物（start.sh / start.bat 输出到 bin/）
+/bin/
 
 # Config with secrets (use config.example.json)
 config.json

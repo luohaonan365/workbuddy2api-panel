@@ -321,6 +321,40 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o login ./cmd/login
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o credit ./cmd/credit
 ```
 
+### 方式四：双击启动器（macOS / Windows / Linux）
+
+不想敲命令时用仓库自带的启动器：双击即完成「按需编译 → 启动 → 健康检查 → 自动打开面板」，关窗即停服务。
+
+| 平台 | 入口 | 说明 |
+|---|---|---|
+| macOS | `启动面板.command` | Finder 双击（首次可能需右键 → 打开） |
+| Windows | `start.bat` | 双击运行；命令行用 `.\start.bat`（`start` 是 cmd 内置命令，必须带扩展名） |
+| Linux | `start.sh` | `./start.sh`，或在文件管理器中「以程序运行」 |
+
+启动器行为与旧的 `启动面板.command` 保持一致：
+
+- 读 `config.json` 的 `listen` / `auth_dir`；配置缺失时，源码目录下提示「首次运行自动生成」，独立运行目录下直接报错
+- 账号目录自检：目录不存在报错；0 个账号时询问是否继续（非交互环境默认取消）
+- 端口占用：先探测 `/healthz`，再询问是否停掉旧进程并重启；选否或定位不到占用进程时只打开面板，不重复起进程
+- 二进制缺失或源码有更新才编译（输出 `bin/wb2api`，兼容根目录的 `wb2api`）；拉依赖失败自动切 `goproxy.cn` 重试
+- 启动后轮询 `/healthz`，2 秒后自动打开 `http://127.0.0.1:<port>/panel/`
+- 终端内 Ctrl+C 优雅停止，退出后回车关窗
+
+源码仓库与运行目录分离时（例如二进制与配置放在 `~/wb2api`）：
+
+```bash
+./start.sh /Users/you/wb2api        # macOS / Linux
+start.bat D:\wb2api                 # Windows
+```
+
+跨平台实现要点：平台相关能力集中在 `cmd/launcher/platform_unix.go`（`darwin || linux`）与
+`platform_windows.go`（`windows`），用 build tag 隔离——打开浏览器（`open` / `xdg-open` /
+`rundll32`）、定位端口占用进程（`lsof` / `ss` / `netstat`）、停止进程（信号 / `taskkill`）、
+Go 安装位置探测。缺工具时降级为「打印面板地址」，不阻塞启动。
+
+环境变量：`WB2API_HOME`（运行目录）、`WB2API_CONFIG`、`WB2API_PORT`、`WB2API_GO`（Go 路径）、
+`WB2API_NO_OPEN`（不自动开浏览器）、`WB2API_NO_PAUSE`（退出不等待回车）。
+
 ### 添加账号（登录）
 
 **方式 A：Web 面板（推荐，各平台通用，免命令行）**
